@@ -6,9 +6,17 @@ if either changes:
 
   Round 1 (matching)   score = moves*10 + seconds
   Round 2 (sorting)    score = seconds*10 + mistakes
-  Overall              score = round1Score + round2Score (computed
-                       client-side and submitted as overallScore, same as
-                       the localStorage placeholder does today)
+  Overall              score = round1Score + round2Score
+
+Unlike the localStorage placeholder (which trusts the client's own
+computation), this server ALWAYS recomputes every score itself from the raw
+moves/seconds/mistakes a client submits — a Round 2 submission's overall
+score is round2's own score plus the student's most recent Round 1 result
+already on file, never a client-supplied number. Some cheap sanity bounds
+(moves >= pairs, a minimum plausible time per pair) reject the laziest fake
+submissions too. None of this is airtight — nothing server-side can fully
+verify gameplay the server never observed — but it closes the trivial
+"POST any number you like" hole.
 
 The Overall leaderboard is aggregated per student: best score, with a
 capped bonus for repeat play within the past week (-5/session, capped at
@@ -106,11 +114,23 @@ class ResultIn(BaseModel):
     moves: Optional[int] = None
     mistakes: Optional[int] = None
     seconds: int
-    overallScore: Optional[int] = None
 
 
 def compute_round1_score(moves: int, seconds: int) -> int:
     return moves * 10 + seconds
+
+
+def compute_round2_score(seconds: int, mistakes: int) -> int:
+    return seconds * 10 + mistakes
+
+
+# Cheap, deliberately loose sanity bounds — not meant to catch a determined
+# cheater (nothing client-submitted can be fully trusted), just the trivial
+# "POST a fake score without playing" case. A perfect Round 1 needs exactly
+# `pairs` moves; the game's own built-in per-match delay means even a
+# flawless run takes at least ~0.4s/pair, so 1 full second/pair is a very
+# generous floor that no real play could undercut.
+MIN_SECONDS_PER_PAIR = 1
 
 
 class ClaimIn(BaseModel):
@@ -152,17 +172,45 @@ def claim_id(claim: ClaimIn):
 def submit_result(result: ResultIn):
     if result.round not in (1, 2):
         raise HTTPException(400, "round must be 1 or 2")
+    if result.pairs <= 0:
+        raise HTTPException(400, "pairs must be positive")
 
-    if result.round == 1:
-        if result.moves is None:
-            raise HTTPException(400, "moves is required for round 1")
-        score = compute_round1_score(result.moves, result.seconds)
-    else:
-        if result.overallScore is None:
-            raise HTTPException(400, "overallScore is required for round 2")
-        score = result.overallScore
+    min_seconds = result.pairs * MIN_SECONDS_PER_PAIR
+    if result.seconds < min_seconds:
+        raise HTTPException(400, f"seconds too low for {result.pairs} pairs")
 
     conn = get_db()
+
+    if result.round == 1:
+        if result.moves is None or result.moves < result.pairs:
+            conn.close()
+            raise HTTPException(400, "moves must be at least pairs for round 1")
+        score = compute_round1_score(result.moves, result.seconds)
+    else:
+        if result.mistakes is None or result.mistakes < 0:
+            conn.close()
+            raise HTTPException(400, "mistakes must be a non-negative number for round 2")
+
+        # overallScore is never trusted from the client — it's recomputed
+        # here from this submission's own round2 score plus the student's
+        # most recent Round 1 result for this same class/pairs. If there's
+        # no Round 1 on record, there's nothing legitimate to attach a
+        # Round 2 submission to.
+        round1_row = conn.execute(
+            """
+            SELECT score FROM results
+            WHERE student_id = ? AND class_name = ? AND pairs = ? AND round = 1
+            ORDER BY played_at DESC LIMIT 1
+            """,
+            (result.studentId, result.className, result.pairs),
+        ).fetchone()
+        if round1_row is None:
+            conn.close()
+            raise HTTPException(400, "no Round 1 result on record for this student/class/pairs")
+
+        round2_score = compute_round2_score(result.seconds, result.mistakes)
+        score = round1_row["score"] + round2_score
+
     conn.execute(
         """
         INSERT INTO results
