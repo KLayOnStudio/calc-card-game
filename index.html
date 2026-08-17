@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FuncMons</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=VT323&display=swap" rel="stylesheet" />
+
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+
+<div id="app">
+
+  <!-- SETUP SCREEN -->
+  <section id="setup-screen" class="screen">
+    <h1>FuncMons</h1>
+    <p class="subtitle">Gotta diff 'em all &mdash; a calculus memory game.</p>
+
+    <label class="checkbox-row">
+      <input type="checkbox" id="guest-toggle" />
+      Playing as a guest / alumni (not currently enrolled)
+    </label>
+
+    <div id="enrollment-fields">
+      <label for="school-year-select">School Year</label>
+      <select id="school-year-select" class="field-input"></select>
+
+      <label for="campus-select" class="field-label">Campus</label>
+      <select id="campus-select" class="field-input"></select>
+    </div>
+
+    <label for="class-select" class="field-label">Class</label>
+    <select id="class-select" class="field-input"></select>
+
+    <label for="week-select" class="field-label">Week</label>
+    <select id="week-select" class="field-input"></select>
+
+    <label for="student-id" class="field-label">Student ID</label>
+    <input id="student-id" type="text" placeholder="Enter your ID" autocomplete="off" />
+
+    <p class="field-label">Number of pairs</p>
+    <div id="pair-count-options" class="pill-group">
+      <button class="pill" data-pairs="8">8 pairs</button>
+      <button class="pill" data-pairs="10">10 pairs</button>
+      <button class="pill" data-pairs="12">12 pairs</button>
+    </div>
+
+    <button id="start-btn" class="primary-btn" disabled>Start Game</button>
+    <p id="start-hint" class="hint"></p>
+  </section>
+
+  <!-- GAME SCREEN -->
+  <section id="game-screen" class="screen hidden">
+    <header class="game-header">
+      <div class="header-item"><span class="label">Player</span><span id="hud-player">&mdash;</span></div>
+      <div class="header-item"><span class="label">Moves</span><span id="hud-moves">0</span></div>
+      <div class="header-item"><span class="label">Time</span><span id="hud-time">0:00</span></div>
+      <button id="quit-btn" class="text-btn">Quit</button>
+    </header>
+    <div id="card-grid" class="card-grid"></div>
+  </section>
+
+  <!-- WIN SCREEN -->
+  <section id="win-screen" class="screen hidden">
+    <h1>Nicely done!</h1>
+    <p id="win-summary" class="subtitle"></p>
+
+    <div id="round1-tab-group" class="tab-group">
+      <button class="tab active" data-range="week">This Week</button>
+      <button class="tab" data-range="all">All-Time</button>
+    </div>
+    <p class="placeholder-note">Leaderboard shown here is stored on this device only &mdash; a shared leaderboard is coming soon.</p>
+    <table id="leaderboard-table">
+      <thead>
+        <tr><th>#</th><th>Student</th><th>Time</th><th>Moves</th></tr>
+      </thead>
+      <tbody id="leaderboard-body"></tbody>
+    </table>
+
+    <div class="win-actions">
+      <button id="round2-btn" class="primary-btn">Continue to Round 2</button>
+      <button id="play-again-btn" class="text-btn">Play Again</button>
+      <button id="change-settings-btn" class="text-btn">Change Settings</button>
+    </div>
+  </section>
+
+  <!-- ROUND 2 SCREEN -->
+  <section id="round2-screen" class="screen hidden">
+    <header class="game-header">
+      <div class="header-item"><span class="label">Player</span><span id="r2-hud-player">&mdash;</span></div>
+      <div class="header-item"><span class="label">Solved</span><span id="r2-hud-solved">0/0</span></div>
+      <div class="header-item"><span class="label">Mistakes</span><span id="r2-hud-mistakes">0</span></div>
+      <div class="header-item"><span class="label">Time</span><span id="r2-hud-time">0:00</span></div>
+      <button id="r2-quit-btn" class="text-btn">Quit</button>
+    </header>
+
+    <div id="r2-play" class="r2-play">
+      <div class="r2-progress">
+        <div id="r2-progress-fill" class="r2-progress-fill"></div>
+      </div>
+      <p class="subtitle">Tap the side that needs <span id="r2-instructions-notation"></span> to complete the equation.</p>
+      <div class="r2-equation">
+        <button class="r2-side" data-side="left"></button>
+        <span id="r2-equals" class="r2-equals">=</span>
+        <button class="r2-side" data-side="right"></button>
+      </div>
+    </div>
+
+    <div id="r2-complete" class="hidden">
+      <h1>Round 2 complete!</h1>
+      <p id="r2-summary" class="subtitle"></p>
+
+      <div id="round2-tab-group" class="tab-group">
+        <button class="tab active" data-range="week">This Week</button>
+        <button class="tab" data-range="all">All-Time</button>
+      </div>
+      <p class="placeholder-note">Overall score combines Round 1 (attempts-weighted) and Round 2 (time-weighted) &mdash; lower is better. Shows your best score; This Week gets a bonus for repeat play (&minus;5/session, capped at &minus;25). Stored on this device only.</p>
+      <table id="r2-leaderboard-table">
+        <thead>
+          <tr><th>#</th><th>Student</th><th>Score</th><th>Sessions</th></tr>
+        </thead>
+        <tbody id="r2-leaderboard-body"></tbody>
+      </table>
+
+      <button id="r2-back-btn" class="primary-btn">Back to Setup</button>
+    </div>
+  </section>
+
+</div>
+
+<script src="data.js"></script>
+<script src="curriculum.js"></script>
+<script src="leaderboard.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
