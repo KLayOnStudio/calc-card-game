@@ -71,6 +71,24 @@ def init_db():
         )
         """
     )
+    # Claims a (class, student ID) pair to whichever browser/device first
+    # used it, via an opaque token the frontend generates once and stores in
+    # localStorage — invisible to the student, no password to remember.
+    # There's no real identity verification here (nothing stops someone from
+    # clearing their browser storage and re-claiming a name), it just stops
+    # the common case of two different students accidentally typing the same
+    # simple ID.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS id_claims (
+            class_name TEXT NOT NULL,
+            student_id TEXT NOT NULL,
+            device_token TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY (class_name, student_id)
+        )
+        """
+    )
     conn.commit()
     conn.close()
 
@@ -93,6 +111,41 @@ class ResultIn(BaseModel):
 
 def compute_round1_score(moves: int, seconds: int) -> int:
     return moves * 10 + seconds
+
+
+class ClaimIn(BaseModel):
+    className: str
+    studentId: str
+    deviceToken: str
+
+
+@app.post("/claim-id")
+def claim_id(claim: ClaimIn):
+    """Call before starting a game. Succeeds if this (class, studentId) is
+    unclaimed, or already claimed by this same deviceToken (a returning
+    student on the same browser). Fails with 409 if a different device
+    already claimed that ID in that class — the frontend should show that
+    as 'pick a different Student ID', not a hard error."""
+    conn = get_db()
+    existing = conn.execute(
+        "SELECT device_token FROM id_claims WHERE class_name = ? AND student_id = ?",
+        (claim.className, claim.studentId),
+    ).fetchone()
+
+    if existing is None:
+        conn.execute(
+            "INSERT INTO id_claims (class_name, student_id, device_token, created_at) VALUES (?, ?, ?, ?)",
+            (claim.className, claim.studentId, claim.deviceToken, datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+        conn.close()
+        return {"ok": True}
+
+    conn.close()
+    if existing["device_token"] == claim.deviceToken:
+        return {"ok": True}
+
+    raise HTTPException(409, f"Student ID '{claim.studentId}' is already in use for {claim.className}.")
 
 
 @app.post("/results")
