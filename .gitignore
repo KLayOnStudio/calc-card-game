@@ -6,3 +6,5 @@ backend/__pycache__/
 backend/.venv/
 backend/*.db
 backend/.env
+backend/local.settings.json
+backend/.python_packages/

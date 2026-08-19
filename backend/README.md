@@ -1,109 +1,108 @@
 # FuncMons Leaderboard API — deployment
 
-FastAPI + SQLite, small enough to run directly with `systemd` behind `nginx`.
-No Docker needed for a class-sized leaderboard.
+Azure Functions (Python, FastAPI wrapped via the ASGI adapter) + Azure SQL
+Database (serverless tier). No VM, no systemd, no manual nginx/HTTPS setup —
+Azure handles all of that. Deploys automatically on every push to `main`
+via GitHub Actions, same trigger-based flow as the frontend's GitHub Pages.
 
-## 1. One-time server setup (Ubuntu/Debian assumed — adjust package manager if different)
+## Files
+
+- `function_app.py` — Azure Functions entry point, wraps `main.py`'s FastAPI
+  app. Nothing Azure-specific lives outside this one file.
+- `main.py` — the actual API. A plain FastAPI app, testable with plain
+  `uvicorn` locally, no Azure Functions involved.
+- `db.py` — Azure SQL connection (via `pyodbc`), reads the connection
+  string from the `SQL_CONNECTION_STRING` environment variable.
+- `host.json` — Azure Functions host configuration (boilerplate, rarely
+  needs touching).
+- `local.settings.json.example` — template for local settings. Copy to
+  `local.settings.json` and fill in real values; that file is gitignored
+  since this repo is public.
+
+## 1. Azure resources (one-time setup, via the Azure Portal)
+
+1. **Azure SQL Database**, serverless compute tier — see chat history for
+   the exact portal walkthrough used, or: SQL databases → Create → General
+   Purpose → Serverless. Enable "Allow Azure services and resources to
+   access this server" under Networking so the Function App can reach it.
+2. **Function App** — Create → Runtime stack: Python 3.11 → Hosting plan:
+   Consumption (serverless, pay-per-execution, generous free tier).
+3. In the Function App's **Configuration → Application settings**, add
+   `SQL_CONNECTION_STRING` with the real connection string (Azure Portal →
+   the SQL Database → Connection strings → ODBC tab, fill in the actual
+   password).
+
+## 2. Local development
+
+### First-time setup
 
 ```bash
-sudo apt update
-sudo apt install -y python3-venv python3-pip nginx certbot python3-certbot-nginx
-
-# App lives here; adjust the path if you'd rather put it elsewhere.
-sudo mkdir -p /opt/funcmons
-sudo chown $USER:$USER /opt/funcmons
-```
-
-Copy this `backend/` folder to `/opt/funcmons` on the VM (`scp -r backend/* user@vm:/opt/funcmons/`).
-
-```bash
-cd /opt/funcmons
+cd backend
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-## 2. systemd service
-
-Create `/etc/systemd/system/funcmons.service`:
-
-```ini
-[Unit]
-Description=FuncMons leaderboard API
-After=network.target
-
-[Service]
-User=YOUR_USERNAME
-WorkingDirectory=/opt/funcmons
-ExecStart=/opt/funcmons/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8000
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
+Local testing also needs Microsoft's ODBC driver installed on your machine
+(the Azure Functions runtime already has this preinstalled — this is only
+for testing on your own computer):
 
 ```bash
-sudo systemctl daemon-reload
-sudo systemctl enable --now funcmons
-sudo systemctl status funcmons   # should show "active (running)"
+brew tap microsoft/mssql-release https://github.com/Microsoft/homebrew-mssql-release
+brew trust microsoft/mssql-release
+HOMEBREW_ACCEPT_EULA=Y brew install msodbcsql18
 ```
 
-The API only listens on `127.0.0.1` — it's not reachable from outside until
-nginx proxies to it below. That's intentional: nginx handles HTTPS/TLS
-termination, uvicorn doesn't need to.
+If that last command fails with a Command Line Tools error, update Xcode
+Command Line Tools first (System Settings → Software Update), then retry.
 
-## 3. nginx reverse proxy + HTTPS
+Copy `local.settings.json.example` to `local.settings.json` and fill in the
+real `SQL_CONNECTION_STRING` (Azure Portal → SQL Database → Connection
+strings → ODBC → fill in your password). This file is gitignored — never
+commit real credentials, the repo is public.
 
-Point a DNS **A record** (not CNAME) for whatever subdomain you're using for
-the API — e.g. `api.klayonstudio.com` → the VM's public IP. (This is
-separate from `games.klayonstudio.com`, which is a CNAME to GitHub Pages for
-the frontend — the API needs its own subdomain pointed directly at the VM.)
-
-Create `/etc/nginx/sites-available/funcmons`:
-
-```nginx
-server {
-    listen 80;
-    server_name api.klayonstudio.com;
-
-    location / {
-        proxy_pass http://127.0.0.1:8000;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-    }
-}
-```
+### Fast local loop (plain uvicorn, no Azure emulation)
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/funcmons /etc/nginx/sites-enabled/
-sudo nginx -t && sudo systemctl reload nginx
-
-# Once the DNS A record above has propagated:
-sudo certbot --nginx -d api.klayonstudio.com
+export SQL_CONNECTION_STRING="<paste the same string from local.settings.json>"
+.venv/bin/uvicorn main:app --reload --port 8000
+curl http://127.0.0.1:8000/health
 ```
 
-Certbot rewrites the nginx config to serve HTTPS and auto-renews the
-certificate (a systemd timer it installs handles renewal — nothing to do
-manually after this).
+### Testing as an actual Azure Function (closer to production)
+
+Needs Azure Functions Core Tools and the Azurite storage emulator:
+
+```bash
+brew install azure-functions-core-tools@4 azurite
+azurite &        # in one terminal
+func start       # in backend/, in another terminal
+```
+
+## 3. Deploying
+
+Handled automatically by `.github/workflows/deploy-backend.yml` on every
+push to `main` that touches `backend/`. First-time setup for that workflow:
+
+1. Azure Portal → your Function App → Overview → **"Get publish profile"**
+   (downloads an XML file).
+2. GitHub repo → Settings → Secrets and variables → Actions → **New
+   repository secret** → name it `AZURE_FUNCTIONAPP_PUBLISH_PROFILE`,
+   paste the entire downloaded file as the value.
+3. Update `AZURE_FUNCTIONAPP_NAME` in the workflow file to match your
+   actual Function App's name.
+
+After that, deploys are automatic — no manual steps.
 
 ## 4. Verify
 
 ```bash
-curl https://api.klayonstudio.com/health
-# {"ok":true}
+curl https://<your-function-app-name>.azurewebsites.net/health
 ```
 
 ## 5. Wire up the frontend
 
-Once the above is live, update `../leaderboard.js` to `fetch()` this API
-instead of `localStorage` — ask Claude to do this swap once you've confirmed
-`/health` responds over HTTPS from the public internet, not just from the VM
-itself. Update `ALLOWED_ORIGINS` in `main.py` first if the frontend's domain
-ever changes from `games.klayonstudio.com`.
-
-## Updating the code later
-
-```bash
-# On your Mac, after Claude edits backend/main.py:
-scp backend/main.py user@vm:/opt/funcmons/main.py
-ssh user@vm 'sudo systemctl restart funcmons'
-```
+Once `/health` responds correctly from the public internet, update
+`../math/funcmons/leaderboard.js` to call this API instead of
+`localStorage`. Ask Claude to do this swap once deployment is confirmed
+working — the live site keeps using localStorage until then, so nothing
+breaks from a premature switch.

@@ -21,18 +21,20 @@ verify gameplay the server never observed — but it closes the trivial
 The Overall leaderboard is aggregated per student: best score, with a
 capped bonus for repeat play within the past week (-5/session, capped at
 -25). All-time shows best score ever, no bonus.
+
+Runs as an Azure Function (see function_app.py) via the ASGI adapter, so
+this file itself is just a plain FastAPI app — nothing Azure-specific here
+except how the database connection is obtained (db.py).
 """
 
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
-import sqlite3
 from typing import Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-DB_PATH = Path(__file__).parent / "funcmons.db"
+from db import get_db, init_db, rows_to_dicts
 
 REPETITION_BONUS_PER_SESSION = 5
 REPETITION_BONUS_MAX = 25
@@ -53,55 +55,9 @@ app.add_middleware(
 )
 
 
-def get_db():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
-
-
-def init_db():
-    conn = get_db()
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS results (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            student_id TEXT NOT NULL,
-            school_year TEXT,
-            campus TEXT,
-            class_name TEXT,
-            pairs INTEGER NOT NULL,
-            round INTEGER NOT NULL,
-            moves INTEGER,
-            mistakes INTEGER,
-            seconds INTEGER NOT NULL,
-            score INTEGER NOT NULL,
-            played_at TEXT NOT NULL
-        )
-        """
-    )
-    # Claims a (class, student ID) pair to whichever browser/device first
-    # used it, via an opaque token the frontend generates once and stores in
-    # localStorage — invisible to the student, no password to remember.
-    # There's no real identity verification here (nothing stops someone from
-    # clearing their browser storage and re-claiming a name), it just stops
-    # the common case of two different students accidentally typing the same
-    # simple ID.
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS id_claims (
-            class_name TEXT NOT NULL,
-            student_id TEXT NOT NULL,
-            device_token TEXT NOT NULL,
-            created_at TEXT NOT NULL,
-            PRIMARY KEY (class_name, student_id)
-        )
-        """
-    )
-    conn.commit()
-    conn.close()
-
-
-init_db()
+@app.on_event("startup")
+def on_startup():
+    init_db()
 
 
 class ResultIn(BaseModel):
@@ -147,13 +103,15 @@ def claim_id(claim: ClaimIn):
     already claimed that ID in that class — the frontend should show that
     as 'pick a different Student ID', not a hard error."""
     conn = get_db()
-    existing = conn.execute(
+    cursor = conn.cursor()
+    cursor.execute(
         "SELECT device_token FROM id_claims WHERE class_name = ? AND student_id = ?",
         (claim.className, claim.studentId),
-    ).fetchone()
+    )
+    existing = rows_to_dicts(cursor)
 
-    if existing is None:
-        conn.execute(
+    if not existing:
+        cursor.execute(
             "INSERT INTO id_claims (class_name, student_id, device_token, created_at) VALUES (?, ?, ?, ?)",
             (claim.className, claim.studentId, claim.deviceToken, datetime.now(timezone.utc).isoformat()),
         )
@@ -162,7 +120,7 @@ def claim_id(claim: ClaimIn):
         return {"ok": True}
 
     conn.close()
-    if existing["device_token"] == claim.deviceToken:
+    if existing[0]["device_token"] == claim.deviceToken:
         return {"ok": True}
 
     raise HTTPException(409, f"Student ID '{claim.studentId}' is already in use for {claim.className}.")
@@ -180,6 +138,7 @@ def submit_result(result: ResultIn):
         raise HTTPException(400, f"seconds too low for {result.pairs} pairs")
 
     conn = get_db()
+    cursor = conn.cursor()
 
     if result.round == 1:
         if result.moves is None or result.moves < result.pairs:
@@ -196,22 +155,23 @@ def submit_result(result: ResultIn):
         # most recent Round 1 result for this same class/pairs. If there's
         # no Round 1 on record, there's nothing legitimate to attach a
         # Round 2 submission to.
-        round1_row = conn.execute(
+        cursor.execute(
             """
-            SELECT score FROM results
+            SELECT TOP 1 score FROM results
             WHERE student_id = ? AND class_name = ? AND pairs = ? AND round = 1
-            ORDER BY played_at DESC LIMIT 1
+            ORDER BY played_at DESC
             """,
             (result.studentId, result.className, result.pairs),
-        ).fetchone()
-        if round1_row is None:
+        )
+        round1_rows = rows_to_dicts(cursor)
+        if not round1_rows:
             conn.close()
             raise HTTPException(400, "no Round 1 result on record for this student/class/pairs")
 
         round2_score = compute_round2_score(result.seconds, result.mistakes)
-        score = round1_row["score"] + round2_score
+        score = round1_rows[0]["score"] + round2_score
 
-    conn.execute(
+    cursor.execute(
         """
         INSERT INTO results
             (student_id, school_year, campus, class_name, pairs, round, moves, mistakes, seconds, score, played_at)
@@ -247,9 +207,9 @@ def is_within_past_week(played_at: str) -> bool:
 def get_leaderboard(pairs: int, round: int, range: str = "week"):
     """Round 1's own leaderboard — one row per session, not aggregated."""
     conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM results WHERE pairs = ? AND round = ?", (pairs, round)
-    ).fetchall()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM results WHERE pairs = ? AND round = ?", (pairs, round))
+    rows = rows_to_dicts(cursor)
     conn.close()
 
     if range == "week":
@@ -273,9 +233,9 @@ def get_overall_leaderboard(pairs: int, range: str = "week"):
     """Round 2's 'Overall' leaderboard — aggregated per student, best score
     plus a capped repetition bonus for This Week (none for All-Time)."""
     conn = get_db()
-    rows = conn.execute(
-        "SELECT * FROM results WHERE pairs = ? AND round = 2", (pairs,)
-    ).fetchall()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM results WHERE pairs = ? AND round = 2", (pairs,))
+    rows = rows_to_dicts(cursor)
     conn.close()
 
     if range == "week":
