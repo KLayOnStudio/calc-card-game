@@ -27,8 +27,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt --target=".python_packages/lib/site-packages"
 
+      # Using azure/webapps-deploy instead of Azure/functions-action: the
+      # latter has a long-standing, still-unresolved bug against Flex
+      # Consumption plans specifically (404 on the Kudu zip-deploy step,
+      # see github.com/Azure/functions-action/issues/216 — dozens of
+      # reports, no fix as of 2026-08). webapps-deploy uses a different
+      # deployment path that sidesteps it, and works fine with the same
+      # publish-profile secret since a Function App is a specialized App
+      # Service under the hood.
       - name: Deploy to Azure Functions
-        uses: Azure/functions-action@v1
+        uses: azure/webapps-deploy@v3
         with:
           app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
           package: backend
