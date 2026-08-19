@@ -9,7 +9,7 @@ on:
 
 env:
   AZURE_FUNCTIONAPP_NAME: "funcmons-app"
-  PYTHON_VERSION: "3.11"
+  AZURE_RESOURCE_GROUP: "funcmons-rg"
 
 jobs:
   deploy:
@@ -17,25 +17,38 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: Log in to Azure
+        uses: azure/login@v2
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      - name: Install dependencies
-        working-directory: backend
+      - name: Build deployment package
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt --target=".python_packages/lib/site-packages"
+          cd backend
+          zip -r ../funcmons-deploy.zip . \
+            -x ".venv/*" -x "__pycache__/*" -x "*.pyc" \
+            -x "local.settings.json*" -x "*.db"
 
-      # Per Microsoft's docs, Azure/functions-action is meant to auto-detect
-      # Flex Consumption and use OneDeploy (the only deployment technology
-      # Flex Consumption supports). Pinned to the latest release explicitly
-      # rather than the floating @v1 tag, since Flex-Consumption-aware
-      # detection is relatively recent and @v1 may resolve to a stale
-      # cached version.
+      # This is the ONLY combination that actually works for a Python app on
+      # a Flex Consumption plan, confirmed by hand before automating it here:
+      # - `az functionapp deployment source config-zip`, NOT `az functionapp
+      #   deploy` (the latter returns a 415 against this plan type) and NOT
+      #   the Azure/functions-action or azure/webapps-deploy GitHub Actions
+      #   (both hit a persistent, unresolved community bug — 404s from an
+      #   incorrect Kudu zip-deploy path that Flex Consumption doesn't support).
+      # - `--build-remote true` is required for Python specifically, per
+      #   Microsoft's docs, so dependencies get installed server-side rather
+      #   than needing to be pre-bundled into the zip.
       - name: Deploy to Azure Functions
-        uses: Azure/functions-action@v1.5.7
-        with:
-          app-name: ${{ env.AZURE_FUNCTIONAPP_NAME }}
-          package: backend
-          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+        run: |
+          az functionapp deployment source config-zip \
+            --src funcmons-deploy.zip \
+            --name ${{ env.AZURE_FUNCTIONAPP_NAME }} \
+            --resource-group ${{ env.AZURE_RESOURCE_GROUP }} \
+            --build-remote true
+
+      - name: Verify health endpoint
+        run: |
+          sleep 15
+          HOSTNAME=$(az functionapp show --name ${{ env.AZURE_FUNCTIONAPP_NAME }} --resource-group ${{ env.AZURE_RESOURCE_GROUP }} --query defaultHostName -o tsv)
+          curl -sf "https://$HOSTNAME/health"
