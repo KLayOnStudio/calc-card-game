@@ -525,7 +525,14 @@ document.querySelectorAll("#round1-tab-group .tab").forEach((tab) => {
 });
 
 async function renderLeaderboard(range) {
-  const rows = await getLeaderboard({ pairs: state.pairCount, round: 1, range });
+  const rows = await getLeaderboard({
+    pairs: state.pairCount,
+    round: 1,
+    range,
+    schoolYear: state.schoolYear,
+    campus: state.campus,
+    className: state.className,
+  });
 
   leaderboardBody.innerHTML = rows
     .map(
@@ -747,7 +754,13 @@ document.querySelectorAll("#round2-tab-group .tab").forEach((tab) => {
 });
 
 async function renderR2Leaderboard(range) {
-  const rows = await getOverallLeaderboard({ pairs: state.pairCount, range });
+  const rows = await getOverallLeaderboard({
+    pairs: state.pairCount,
+    range,
+    schoolYear: state.schoolYear,
+    campus: state.campus,
+    className: state.className,
+  });
 
   r2LeaderboardBody.innerHTML = rows
     .map(

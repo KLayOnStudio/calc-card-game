@@ -98,9 +98,17 @@ async function submitResult({ studentId, schoolYear, campus, className, pairs, r
   }
 }
 
-async function getLeaderboard({ pairs, round, range }) {
+async function getLeaderboard({ pairs, round, range, schoolYear, campus, className }) {
   try {
-    const response = await fetch(`${API_BASE_URL}/leaderboard?pairs=${pairs}&round=${round}&range=${range}`);
+    const params = new URLSearchParams({
+      pairs,
+      round,
+      range,
+      schoolYear,
+      campus,
+      className,
+    });
+    const response = await fetch(`${API_BASE_URL}/leaderboard?${params}`);
     if (!response.ok) return [];
     return await response.json();
   } catch (err) {
@@ -109,9 +117,16 @@ async function getLeaderboard({ pairs, round, range }) {
   }
 }
 
-async function getOverallLeaderboard({ pairs, range }) {
+async function getOverallLeaderboard({ pairs, range, schoolYear, campus, className }) {
   try {
-    const response = await fetch(`${API_BASE_URL}/leaderboard/overall?pairs=${pairs}&range=${range}`);
+    const params = new URLSearchParams({
+      pairs,
+      range,
+      schoolYear,
+      campus,
+      className,
+    });
+    const response = await fetch(`${API_BASE_URL}/leaderboard/overall?${params}`);
     if (!response.ok) return [];
     return await response.json();
   } catch (err) {

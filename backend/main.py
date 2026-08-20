@@ -204,11 +204,17 @@ def is_within_past_week(played_at: str) -> bool:
 
 
 @app.get("/leaderboard")
-def get_leaderboard(pairs: int, round: int, range: str = "week"):
-    """Round 1's own leaderboard — one row per session, not aggregated."""
+def get_leaderboard(pairs: int, round: int, schoolYear: str, campus: str, className: str, range: str = "week"):
+    """Round 1's own leaderboard — one row per session, not aggregated.
+    Scoped to one school year + campus + class at a time, so e.g. Math
+    204-1 and Math 207, or two campuses, or a repeated future term never
+    mix on the same board."""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM results WHERE pairs = ? AND round = ?", (pairs, round))
+    cursor.execute(
+        "SELECT * FROM results WHERE pairs = ? AND round = ? AND school_year = ? AND campus = ? AND class_name = ?",
+        (pairs, round, schoolYear, campus, className),
+    )
     rows = rows_to_dicts(cursor)
     conn.close()
 
@@ -229,12 +235,16 @@ def get_leaderboard(pairs: int, round: int, range: str = "week"):
 
 
 @app.get("/leaderboard/overall")
-def get_overall_leaderboard(pairs: int, range: str = "week"):
+def get_overall_leaderboard(pairs: int, schoolYear: str, campus: str, className: str, range: str = "week"):
     """Round 2's 'Overall' leaderboard — aggregated per student, best score
-    plus a capped repetition bonus for This Week (none for All-Time)."""
+    plus a capped repetition bonus for This Week (none for All-Time). Scoped
+    to one school year + campus + class, same as get_leaderboard above."""
     conn = get_db()
     cursor = conn.cursor()
-    cursor.execute("SELECT * FROM results WHERE pairs = ? AND round = 2", (pairs,))
+    cursor.execute(
+        "SELECT * FROM results WHERE pairs = ? AND round = 2 AND school_year = ? AND campus = ? AND class_name = ?",
+        (pairs, schoolYear, campus, className),
+    )
     rows = rows_to_dicts(cursor)
     conn.close()
 
