@@ -1,43 +1,37 @@
-// Placeholder leaderboard "backend".
-//
-// This whole file is a stand-in for the future Azure API. Every function
-// here is async and returns/accepts the same shape a real fetch() call
-// would, so swapping the bodies for real HTTP requests later shouldn't
-// require touching any caller in app.js.
+// Live leaderboard API — talks to the Azure Functions backend (see
+// ../../backend/). Every function here keeps the exact same shape the
+// localStorage placeholder had, so nothing in app.js needed to change
+// except adding the new claimStudentId() call before starting a game.
 //
 // Scoring (lower is always better, golf-style):
 //   Round 1 (matching)   score = moves*10 + seconds   — attempts weighted over time
 //   Round 2 (sorting)    score = seconds*10 + mistakes — time weighted over attempts
 //   Overall (after Rd 2) score = round1Score + round2Score
 //
-// Round 1 results are submitted (and ranked) on their own right after the
-// Round 1 win. Round 2 results are only ever shown as the combined
-// "Overall" ranking once Round 2 finishes — there's no separate
-// Round-2-only leaderboard.
+// The server ALWAYS recomputes every score itself from raw moves/seconds/
+// mistakes — it never trusts a client-supplied score. computeRound1Score/
+// computeRound2Score are kept here purely for instant local display (e.g.
+// showing "Overall score: X" on the win screen without an extra round
+// trip) — the leaderboard's actual ranking always reflects what the server
+// computed and stored, not this local echo.
 //
-// The Overall leaderboard is aggregated per student (not one row per
-// session): it shows each student's BEST overall score, discounted by a
+// The Overall leaderboard is aggregated per student server-side (not one
+// row per session): each student's BEST overall score, discounted by a
 // capped bonus for repeated play — this week: 5 points off per session
 // played that week, capped at 25 (5 sessions). All-time: best score ever,
-// no bonus (repetition credit is inherently a weekly thing). This rewards
-// practicing more without letting raw session count overwhelm performance,
-// and without the perverse "stop playing to protect your total" incentive
-// a literal sum of scores would create.
+// no bonus.
 //
-//   submitResult({ studentId, schoolYear, campus, className, pairs, round, moves, mistakes, seconds, overallScore })
+//   claimStudentId({ className, studentId })
+//     -> Promise<{ ok: boolean, message?: string }>
+//   submitResult({ studentId, schoolYear, campus, className, pairs, round, moves, mistakes, seconds })
 //     -> Promise<void>
 //   getLeaderboard({ pairs, round, range })
 //     -> Promise<Array<Result>>                    // round 1 only, one row per session
 //   getOverallLeaderboard({ pairs, range })
 //     -> Promise<Array<{studentId, score, sessions}>>  // round 2 "Overall", aggregated per student
-//
-// where Result = { studentId, schoolYear, campus, className, pairs, round,
-//                   moves, mistakes, seconds, score, playedAt (ISO string) }
 
-const LEADERBOARD_STORAGE_KEY = "calcCardGame.results.v2";
-const REPETITION_BONUS_PER_SESSION = 5;
-const REPETITION_BONUS_MAX = 25;
-const ONE_WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const API_BASE_URL = "https://funcmons-app-exduaqezbqeydcet.centralus-01.azurewebsites.net";
+const DEVICE_TOKEN_KEY = "funcmons.deviceToken";
 
 function computeRound1Score(moves, seconds) {
   return moves * 10 + seconds;
@@ -47,74 +41,81 @@ function computeRound2Score(seconds, mistakes) {
   return seconds * 10 + mistakes;
 }
 
-function isWithinPastWeek(result) {
-  return Date.now() - new Date(result.playedAt).getTime() <= ONE_WEEK_MS;
+// An invisible per-browser token, not a password — lets the server tell a
+// returning student on the same device apart from a different device
+// trying to reuse their Student ID. See backend/main.py's /claim-id.
+function getDeviceToken() {
+  try {
+    let token = localStorage.getItem(DEVICE_TOKEN_KEY);
+    if (!token) {
+      token = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+      localStorage.setItem(DEVICE_TOKEN_KEY, token);
+    }
+    return token;
+  } catch (err) {
+    console.warn("Could not access localStorage for device token", err);
+    return `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  }
 }
 
-function readAllResults() {
+// Call before starting a game whenever studentId is non-empty. Resolves
+// {ok:false, message} on a real conflict (a different device already
+// claimed this ID in this class) — the caller should block starting and
+// show that message. On any other failure (network down, API erroring),
+// resolves {ok:true} so a backend hiccup never blocks students from
+// playing; that game's result just won't have a claim behind it.
+async function claimStudentId({ className, studentId }) {
   try {
-    const raw = localStorage.getItem(LEADERBOARD_STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
+    const response = await fetch(`${API_BASE_URL}/claim-id`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ className, studentId, deviceToken: getDeviceToken() }),
+    });
+
+    if (response.status === 409) {
+      const body = await response.json().catch(() => ({}));
+      return { ok: false, message: body.detail || `Student ID '${studentId}' is already in use for ${className}.` };
+    }
+    return { ok: true };
   } catch (err) {
-    console.warn("Could not read local leaderboard storage", err);
+    console.warn("Could not reach leaderboard API for ID claim", err);
+    return { ok: true };
+  }
+}
+
+async function submitResult({ studentId, schoolYear, campus, className, pairs, round, moves, mistakes, seconds }) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/results`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ studentId, schoolYear, campus, className, pairs, round, moves, mistakes, seconds }),
+    });
+    if (!response.ok) {
+      console.warn("Leaderboard API rejected result submission", await response.text());
+    }
+  } catch (err) {
+    console.warn("Could not submit result to leaderboard API", err);
+  }
+}
+
+async function getLeaderboard({ pairs, round, range }) {
+  try {
+    const response = await fetch(`${API_BASE_URL}/leaderboard?pairs=${pairs}&round=${round}&range=${range}`);
+    if (!response.ok) return [];
+    return await response.json();
+  } catch (err) {
+    console.warn("Could not load leaderboard", err);
     return [];
   }
 }
 
-function writeAllResults(results) {
-  try {
-    localStorage.setItem(LEADERBOARD_STORAGE_KEY, JSON.stringify(results));
-  } catch (err) {
-    console.warn("Could not write local leaderboard storage", err);
-  }
-}
-
-async function submitResult({ studentId, schoolYear, campus, className, pairs, round, moves, mistakes, seconds, overallScore }) {
-  const results = readAllResults();
-  const score = round === 1 ? computeRound1Score(moves, seconds) : overallScore;
-
-  results.push({
-    studentId,
-    schoolYear,
-    campus,
-    className,
-    pairs,
-    round,
-    moves: moves ?? null,
-    mistakes: mistakes ?? null,
-    seconds,
-    score,
-    playedAt: new Date().toISOString(),
-  });
-  writeAllResults(results);
-}
-
-async function getLeaderboard({ pairs, round, range }) {
-  const all = readAllResults().filter((r) => r.pairs === pairs && r.round === round);
-  const filtered = range === "week" ? all.filter(isWithinPastWeek) : all;
-  return filtered.sort((a, b) => a.score - b.score).slice(0, 10);
-}
-
 async function getOverallLeaderboard({ pairs, range }) {
-  const all = readAllResults().filter((r) => r.pairs === pairs && r.round === 2);
-  const relevant = range === "week" ? all.filter(isWithinPastWeek) : all;
-
-  const byStudent = new Map();
-  for (const r of relevant) {
-    const entry = byStudent.get(r.studentId) || { studentId: r.studentId, bestScore: Infinity, sessions: 0 };
-    entry.bestScore = Math.min(entry.bestScore, r.score);
-    entry.sessions += 1;
-    byStudent.set(r.studentId, entry);
+  try {
+    const response = await fetch(`${API_BASE_URL}/leaderboard/overall?pairs=${pairs}&range=${range}`);
+    if (!response.ok) return [];
+    return await response.json();
+  } catch (err) {
+    console.warn("Could not load overall leaderboard", err);
+    return [];
   }
-
-  const rows = [...byStudent.values()].map((entry) => {
-    const bonus = range === "week" ? Math.min(entry.sessions * REPETITION_BONUS_PER_SESSION, REPETITION_BONUS_MAX) : 0;
-    return {
-      studentId: entry.studentId,
-      sessions: entry.sessions,
-      score: Math.max(0, entry.bestScore - bonus),
-    };
-  });
-
-  return rows.sort((a, b) => a.score - b.score).slice(0, 10);
 }

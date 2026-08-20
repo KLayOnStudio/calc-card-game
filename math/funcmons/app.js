@@ -208,12 +208,27 @@ function updateStartButton() {
 
 updateStartButton();
 
-startBtn.addEventListener("click", () => {
+startBtn.addEventListener("click", async () => {
+  const studentId = studentIdInput.value.trim();
+  const className = classSelect.value;
+
+  // Only bother claiming an ID if there's an ID to protect — guests/blank
+  // IDs have nothing for another student to collide with.
+  if (studentId) {
+    startBtn.disabled = true;
+    const claim = await claimStudentId({ className, studentId });
+    startBtn.disabled = false;
+    if (!claim.ok) {
+      startHint.textContent = claim.message;
+      return;
+    }
+  }
+
   startGame({
-    studentId: studentIdInput.value.trim(),
+    studentId,
     schoolYear: guestToggle.checked ? "Guest/Alumni" : schoolYearSelect.value,
     campus: guestToggle.checked ? "Guest/Alumni" : campusSelect.value,
-    className: classSelect.value,
+    className,
     weekNumber: Number(weekSelect.value),
     pairCount: selectedPairCount,
   });
