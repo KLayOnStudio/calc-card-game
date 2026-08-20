@@ -7,7 +7,7 @@ const winScreen = document.getElementById("win-screen");
 const round2Screen = document.getElementById("round2-screen");
 
 const guestToggle = document.getElementById("guest-toggle");
-const enrollmentFields = document.getElementById("enrollment-fields");
+const nonGuestFields = document.getElementById("non-guest-fields");
 const schoolYearSelect = document.getElementById("school-year-select");
 const campusSelect = document.getElementById("campus-select");
 const classSelect = document.getElementById("class-select");
@@ -51,6 +51,48 @@ function populateWeekOptions(className) {
   weekSelect.value = String(getCurrentWeekNumber(className));
 }
 
+// A persistent per-browser identity for guest/tester play, generated once
+// so repeat guest sessions on the same device still build up the
+// repetition bonus and show progress on the leaderboard.
+const GUEST_ID_KEY = "funcmons.guestId";
+
+function generateGuestId() {
+  const chars = "abcdefghijklmnopqrstuvwxyz0123456789";
+  let suffix = "";
+  for (let i = 0; i < 4; i++) suffix += chars[Math.floor(Math.random() * chars.length)];
+  return `Guest-${suffix}`;
+}
+
+function getGuestId() {
+  try {
+    let id = localStorage.getItem(GUEST_ID_KEY);
+    if (!id) {
+      id = generateGuestId();
+      localStorage.setItem(GUEST_ID_KEY, id);
+    }
+    return id;
+  } catch (err) {
+    console.warn("Could not access localStorage for guest ID", err);
+    return generateGuestId();
+  }
+}
+
+// Guests skip every field except pair count: School Year/Campus/Class/Week
+// all get hidden and auto-filled (Class -> GUEST_CLASS, which has its own
+// curriculum.js entry, since content generation still needs some class to
+// key off of even though nobody picked one).
+function applyGuestMode(isGuest) {
+  nonGuestFields.classList.toggle("hidden", isGuest);
+
+  if (isGuest) {
+    populateWeekOptions(GUEST_CLASS);
+    studentIdInput.value = getGuestId();
+  } else {
+    populateWeekOptions(classSelect.value);
+    if (studentIdInput.value === getGuestId()) studentIdInput.value = "";
+  }
+}
+
 // Remember the last-used setup fields on this browser/device so returning
 // students don't have to re-enter everything. On a shared computer this
 // will also pre-fill the previous student's info; typing/reselecting
@@ -86,10 +128,7 @@ function saveSetupCache() {
 }
 
 const cachedSetup = loadSetupCache();
-if (cachedSetup.isGuest) {
-  guestToggle.checked = true;
-  enrollmentFields.classList.add("hidden");
-}
+if (cachedSetup.isGuest) guestToggle.checked = true;
 if (SCHOOL_YEARS.includes(cachedSetup.schoolYear)) schoolYearSelect.value = cachedSetup.schoolYear;
 if (CAMPUSES.includes(cachedSetup.campus)) campusSelect.value = cachedSetup.campus;
 if (CLASSES.includes(cachedSetup.className)) classSelect.value = cachedSetup.className;
@@ -101,10 +140,10 @@ if (cachedSetup.pairCount) {
     selectedPairCount = cachedSetup.pairCount;
   }
 }
-populateWeekOptions(classSelect.value);
+applyGuestMode(guestToggle.checked);
 
 guestToggle.addEventListener("change", () => {
-  enrollmentFields.classList.toggle("hidden", guestToggle.checked);
+  applyGuestMode(guestToggle.checked);
   updateStartButton();
   saveSetupCache();
 });
@@ -179,9 +218,10 @@ studentIdInput.addEventListener("input", () => {
 
 function updateStartButton() {
   // Class/Week/pair-count are hard requirements — without them there's no
-  // content to generate at all, regardless of guest mode.
+  // content to generate at all. Guests get Class filled in automatically
+  // (GUEST_CLASS), so that check only applies to non-guests.
   const hardRequirementsMissing = [];
-  if (!classSelect.value) hardRequirementsMissing.push("Class");
+  if (!guestToggle.checked && !classSelect.value) hardRequirementsMissing.push("Class");
   if (!weekSelect.value) hardRequirementsMissing.push("Week");
   if (!selectedPairCount) hardRequirementsMissing.push("Number of pairs");
 
@@ -210,7 +250,7 @@ updateStartButton();
 
 startBtn.addEventListener("click", async () => {
   const studentId = studentIdInput.value.trim();
-  const className = classSelect.value;
+  const className = guestToggle.checked ? GUEST_CLASS : classSelect.value;
 
   // Only bother claiming an ID if there's an ID to protect — guests/blank
   // IDs have nothing for another student to collide with.
@@ -227,7 +267,7 @@ startBtn.addEventListener("click", async () => {
   startGame({
     studentId,
     schoolYear: guestToggle.checked ? "Guest/Alumni" : schoolYearSelect.value,
-    campus: guestToggle.checked ? "Guest/Alumni" : campusSelect.value,
+    campus: guestToggle.checked ? GUEST_CAMPUS : campusSelect.value,
     className,
     weekNumber: Number(weekSelect.value),
     pairCount: selectedPairCount,

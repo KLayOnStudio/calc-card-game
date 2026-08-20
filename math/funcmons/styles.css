@@ -127,7 +127,7 @@ label, .field-label {
   cursor: pointer;
 }
 
-#enrollment-fields.hidden {
+#non-guest-fields.hidden {
   display: none;
 }
 

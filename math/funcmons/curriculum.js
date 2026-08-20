@@ -101,6 +101,19 @@ const WEEKLY_CURRICULUM = {
     { categories: [{ key: "monomial", weight: 0.8 }, { key: "sumOfMonomials", weight: 0.2 }], allowBig: false },
     { categories: [{ key: "monomialWithCoefficient", weight: 0.8 }, { key: "linearCombination", weight: 0.2 }], allowBig: true },
   ],
+  // Guest/tester content — a single always-available "week" mixing every
+  // category at once, since there's no real weekly pacing to follow here.
+  "Guest Practice": [
+    {
+      categories: [
+        { key: "monomial", weight: 0.35 },
+        { key: "sumOfMonomials", weight: 0.15 },
+        { key: "monomialWithCoefficient", weight: 0.35 },
+        { key: "linearCombination", weight: 0.15 },
+      ],
+      allowBig: true,
+    },
+  ],
 };
 
 function getAvailableWeeks(className) {
